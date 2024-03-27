@@ -1,0 +1,224 @@
+<template>
+  <div class="page">
+    <!-- Top Navbar -->
+    <div class="navbar">
+      <div class="navbar-bg"></div>
+      <div class="navbar-inner">
+        <div class="title sliding">地図コンポーネント</div>
+      </div>
+    </div>
+    <div class="page-content">
+      <!-- 地図表示とリスト表示を切り替えます -->
+      <p class="segmented segmented-raised">
+        <button class="button button-map button-active" @click=${() => changeView("map")}>地図</button>
+        <button class="button button-list" @click=${() => changeView("list")}>リスト</button>
+      </p>
+      <!-- 地図用 -->
+      <span class="sub-page page-map">
+        <div id='map'></div>
+      </span>
+      <!-- リスト用 -->
+      <span class="sub-page page-list">
+        <div class="list media-list">
+          <ul>
+            ${stores.map(store => $h`
+              <li>
+                <a href="#" class="item-content">
+                  <div class="item-inner">
+                    <div class="item-title-row">
+                      <div class="item-title">${store['名称']}店</div>
+                      <div class="item-after">${distance(store['緯度'], store['経度'])}km</div>
+                    </div>
+                    <div class="item-subtitle">${store['所在地']}</div>
+                    <div class="item-text">${store['電話番号']}</div>
+                  </div>
+                </a>
+              </li>
+            `)}
+          </ul>
+        </div>
+      </span>
+    </div>
+    <!-- マーカーをタップした際のシート表示用 -->
+    <div class="sheet-modal store-sheet">
+      <div class="toolbar">
+        <div class="toolbar-inner">
+          <div class="left"></div>
+          <div class="right"><a class="link sheet-close" href="#">閉じる</a></div>
+        </div>
+      </div>
+      <div class="sheet-modal-inner">
+        <div class="block">
+          <h4>${store['名称']}店</h4>
+          <p>
+            <ul>
+              <li>電話番号: ${store['電話番号']}</li>
+              <li>住所: ${store['所在地']}</li>
+            </ul>
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+<style>
+  #map {
+    width: 100%;
+    height: 100%;
+    position: relative;
+  }
+  canvas, .mapboxgl-canvas {
+    height: 100%;
+  }
+  .page-list {
+    display: none;
+  }
+</style>
+<script>
+  const url = 'https://service.api.metro.tokyo.lg.jp/api/t132047d0000000004-44947822b3c13ba51b59e3278e2d018c-0/json';
+  const limit = 20;
+
+  export default function (props, {$f7, $on, $onMounted, $update}) {
+    // NCMBとMapboxが初期化されているかチェックします
+    if (typeof mapboxgl.accessToken === 'undefined') throw 'Mapboxが初期化されていません';
+    // 地図コンポーネントで利用している変数
+    let map;
+    let stores = [];
+    let store = {};
+    let markers = [];
+    let position = {};
+
+    // マウントされた際に実行します
+    $onMounted(async () => {
+      // ローディングアイコンを表示
+      app.preloader.show();
+      try {
+        // ポジションとして緯度経度を記録します（緯度・経度は三鷹市中央あたり）
+        position = {
+          latitude: 35.6835424,
+          longitude: 139.5592677,
+        };
+        // 地図を表示します
+        initMap();
+        // 現在位置の付近にある店舗情報を取得します
+        stores = await getData();
+        // 取得した店舗を地図に表示します
+        addStore();
+        // 地図の表示を調整します
+        fitBounds();
+        // ローディングアイコンを消します
+        app.preloader.hide();
+      } catch (e) {
+        console.error(e);
+        $f7.dialog.alert('初期表示中にエラーが発生しました');
+      }
+    });
+
+    // 古いデータを消します
+    const initialize = () => {
+      // 地図のマーカーを消します
+      markers.forEach(m => m.remove());
+      // 店舗情報を消します
+      stores = [];
+      store = {};
+    }
+
+    // 地図表示とマーカー表示を切り替えます
+    const changeView = (value) => {
+      // セグメントボタンのアクティブを切り替えます
+      $('.segmented button').removeClass('button-active');
+      $(`.button-${value}`).addClass('button-active');
+      // 地図とリスト表示を切り替えます
+      $('.sub-page').hide();
+      // 表示を更新します
+      $update();
+      $(`.page-${value}`).show();
+    };
+
+    // 地図を初期化します
+    const initMap = () => {
+      const { latitude, longitude } = position;
+      map = new mapboxgl.Map({
+        container: 'map',
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [longitude, latitude],
+        zoom: 11,
+      });
+      const language = new MapboxLanguage({ defaultLanguage: 'ja' });
+      map.addControl(language);
+    }
+
+    // 付近にある店舗情報を取得します
+    const getData = async () => {
+      const res = await fetch(`${url}?limit=${limit}`, {
+        body: JSON.stringify({}),
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        method: "POST"
+      });
+      const json = await res.json();
+      return json.hits;
+    }
+
+    // 地図に店舗マーカーを表示します
+    const addStore = () => {
+      stores.forEach(store => {
+        markers.push(new clickableMarker()
+          .setLngLat([store['経度'], store['緯度']])
+          .setStore(store)
+          .addTo(map));
+      });
+    };
+
+    // 店舗情報がすべて表示される形で地図の中心点を変更します
+    const fitBounds = () => {
+      // turf.jsを利用します
+      const line = turf.lineString(stores.map(store => [store['経度'], store['緯度']]));
+      const bbox = turf.bbox(line);
+      map.fitBounds(bbox, {
+        padding: {top: 10, bottom: 10, left: 10, right: 10}
+      });
+    }
+
+    // 一覧表示用に、店舗までの距離を計算します
+    const distance = (latitude, longitude) => {
+      const R = Math.PI / 180;
+      latitude2 = position.latitude;
+      longitude2 = position.longitude;
+      latitude *= R;
+      longitude *= R;
+      latitude2 *= R;
+      longitude2 *= R;
+      return (6371
+        * Math.acos(Math.cos(latitude)
+        * Math.cos(latitude2)
+        * Math.cos(longitude2 - longitude) + Math.sin(latitude)
+        * Math.sin(latitude2))).toFixed(1); 
+    }
+
+    // マーカーをタップした際にシートを表示するため、Markerクラスの処理を書き換えています
+    class clickableMarker extends mapboxgl.Marker{
+      // 店舗情報をクラス内に入れておきます
+      setStore(store) {
+        this.store = store;
+        return this;
+      }
+      // マーカーをタップした際のイベントです
+      _onMapClick(e) {
+        const targetElement = e.originalEvent.target;
+        const element = this._element;
+        if (targetElement === element || element.contains((targetElement))) {
+          // 店舗情報をセットします
+          store = this.store;
+          // 表示を更新します
+          $update();
+          // シートを表示します
+          app.sheet.open('.store-sheet');
+        }
+      }
+    }
+    return $render;
+  }
+</script>
